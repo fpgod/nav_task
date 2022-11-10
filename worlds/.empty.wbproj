@@ -8,7 +8,7 @@ centralWidgetVisible: 1
 projectionMode: PERSPECTIVE
 renderingMode: PLAIN
 orthographicViewHeight: 1
-textFiles: 1 "controllers/eva/eva.py" "controllers/apf_sac/apf_sac.py"
+textFiles: 0 "controllers/apf_sac/apf_sac.py"
 consoles: Console:All:All
 renderingDevicePerspectives: e-puck0:camera;0;1;0;0
 renderingDevicePerspectives: e-puck1:camera;1;1;0;0

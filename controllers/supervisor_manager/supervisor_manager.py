@@ -1,18 +1,15 @@
-## 基于sac实现的多车聚集任务
-# 保存文件：models/actor_sac,critic_sac,critic_target_sac
+
 import math
 
 import torch
 # from deepbots.supervisor.controllers.supervisor_env import SupervisorEnv
-from utilities import normalizeToRange
+from supervisor_manager.utilities import normalizeToRange
 from controller import Supervisor
 import numpy as np
 import os
-from models.networks import DDPG
 from sac_rl import *
 from gym import spaces
 
-# import wandb
 
 def cal_dis(x,y):
     dis = np.linalg.norm([x,y])
@@ -25,7 +22,7 @@ def cal_dis(x,y):
 
 
 class EpuckSupervisor:
-    def __init__(self, num_robots=10):
+    def __init__(self, num_robots=5):
         super().__init__()
         self.num_robots = num_robots
         self.num_cols = 5   #障碍物数量
@@ -35,11 +32,12 @@ class EpuckSupervisor:
         self.steps_limit = 1000
         self.communication = self.initialize_comms()
         self.action_space = spaces.Box(low = np.array([-1,-1]),high=np.array([1,1]),dtype=np.float32)
-        self.observation_space = spaces.Box(low = -np.ones(33),high = np.ones(33),dtype=np.float64)
+        self.observation_space = spaces.Box(low = -np.ones(9),high = np.ones(9),dtype=np.float64)
         # 初始化reciver和emitter，存入communication
 
-        # self.observation_space = 3
         self.obs_history = [ ]
+        self.dis_epu_history = [ ]
+        self.selfless = [True for i in range(self.num_robots)]
         self.robot = [self.supervisor.getFromDef("e-puck" + str(i)) for i in range(self.num_robots)]
         self.col = [self.supervisor.getFromDef("col"+str(i)) for i in range(self.num_cols)]
 
@@ -49,8 +47,8 @@ class EpuckSupervisor:
         self.episode_score = 0
         self.episode_score_list = []
         self.is_solved = False
-        self.targetx = [1.00,-1.0,1.00,0.00,-1.00,1.00,-1.00,0.00,-0.5,0.50]
-        self.targety = [-1.00,-1.0,0.00,-1.00,0.00,1.00,1.00,1.00,-1.00,1.00]
+        self.targetx = [1.00,-1.0,1.00,0.00,-1.00]
+        self.targety = [-1.00,-1.0,1.00,-1.00,1.00]
         self.evaluate_reward_history = []
 
 
@@ -75,7 +73,6 @@ class EpuckSupervisor:
                 'emitter': emitter,
                 'receiver': receiver,
             })
-        # communication : [{'emitter':**,'receiver':***},{'emitter':**,'receiver':***},{'emitter':**,'receiver':***}]
 
         return communication
 
@@ -96,12 +93,9 @@ class EpuckSupervisor:
     def handle_emitter(self, actions):
         for i, action in enumerate(actions):
             message = (",".join(map(str, action))).encode("utf-8")
-            #获取第ige智能体的action：[,]
-            # print(message)
             self.communication[i]['emitter'].send(message)
-            #在第i个通道上发布message信息
 
-    def handle_receiver(self):# 获取某个通道上发布的信息，存入messages中。
+    def handle_receiver(self):
         messages = []
         for com in self.communication:
             receiver = com['receiver']
@@ -110,40 +104,24 @@ class EpuckSupervisor:
                 receiver.nextPacket()
             else:
                 messages.append(None)
-        # print(messages)
         return messages
 
     def get_observations(self):
         self.positions_x = np.array([normalizeToRange(self.robot[i].getPosition()[0], -1.97, 1.97, -2.0, 2.0)
                                      for i in range(self.num_robots)])
-        # 限制位置到-0.97
         self.positions_y = np.array([normalizeToRange(self.robot[i].getPosition()[1], -1.97, 1.97, -2.0, 2.0)
                                      for i in range(self.num_robots)])
-        # 限制速度到0.15
-        # self.velocity_x = np.array([normalizeToRange(self.robot[i].getVelocity()[0], -0.15, 0.15, -1.0, 1.0)
-        #                             for i in range(self.num_robots)])
-        # self.velocity_y = np.array([normalizeToRange(self.robot[i].getVelocity()[1], -0.15, 0.15, -1.0, 1.0)
-        #                             for i in range(self.num_robots)])
-        # print(self.distance)
-
+        self.rot = np.array([self.robot[i].getField("rotation").getSFRotation()[3] % (2 * np.pi)
+                                              if self.robot[i].getField("rotation").getSFRotation()[2]
+                                                 > 0 else (-self.robot[i].getField("rotation").getSFRotation()[
+                                                  3]) % (2 * np.pi) for i in range(self.num_robots)])
         self.col_x = np.array(
             [normalizeToRange(self.col[i].getField("translation").getSFVec3f()[0], -1.97, 1.97, -2.0, 2.0)
              for i in range(self.num_cols)])
-        # 限制位置到-1.97
         self.col_y = np.array(
             [normalizeToRange(self.col[i].getField("translation").getSFVec3f()[1], -1.97, 1.97, -2.0, 2.0)
              for i in range(self.num_cols)])
         self.messageReceived = self.handle_receiver()
-        # ds_value = np.empty([self.num_robots, 8], float)
-        # for i, message in enumerate(self.messageReceived):
-        #     if message is not None:
-        #         message = message.split(',')
-        #         ds_value[i] = [message[j] for j in range(8)]
-        #         for k in range(8):
-        #             ds_value[i][k] =(ds_value[i][k]-60)/60
-        #         self.ds = ds_value
-        #     else:
-        #         ds_value = np.zeros((self.num_robots, 8), float)
         self.observations = np.empty((self.num_robots, self.observation_space.shape[0]), float)
         self.dis_goal = [cal_dis(self.positions_x[i] - self.targetx[i], self.positions_y[i] - self.targety[i]) for i
                          in range(self.num_robots)]
@@ -167,74 +145,57 @@ class EpuckSupervisor:
             dis_epu_temp = np.copy(self.dis_epu[i])
             dis_epu_temp[np.where(self.dis_epu[i] == 0)] = 999
             index = np.argwhere(dis_epu_temp == dis_epu_temp.min())[0][0]
-            # a = np.append(positions_x[i]-positions_x,positions_y[i]-positions_y)
-            # print('a',a)
-            # self.observations[i] = np.append(a,[self.targetx-positions_x[i],self.targety-positions_y[i],self.robot[i].getField("rotation").getSFRotation()[3]%(2*np.pi)
-            #                                 if self.robot[i].getField("rotation").getSFRotation()[2] >0 else (-self.robot[i].getField("rotation").getSFRotation()[3])%(2*np.pi)])
-            # self.observations[i] = np.append([self.dis_epu[i],self.rot_epu[i]],[self.dis_goal[i],
-            #                                  self.rot_goal[i], self.positions_x[i]-self.targetx[i],self.positions_y-self.targety[i],self.robot[i].getField("rotation").getSFRotation()[3]%(2*np.pi)
-            #                                  if self.robot[i].getField("rotation").getSFRotation()[2]
-            #                                     >0 else (-self.robot[i].getField("rotation").getSFRotation()[3])%(2*np.pi)
-            #                                   ])
             delta_x = self.positions_x[i] - self.targetx[i]
             delta_y = self.positions_y[i] - self.targety[i]
-            self.observations[i] = np.hstack([a, b, delta_x, delta_y,c,d,
+            if self.dis_col[i].min() > 0.4:
+                c_temp = 0.4 #c[index_col]
+                d_temp = 0.4 #d[index_col]
+            else:
+                c_temp = c[index_col]
+                d_temp = d[index_col]
+            if dis_epu_temp.min() > 0.4:
+                a_temp = 0.4
+                b_temp = 0.4
+                self.selfless[i] = False
+                v_x_temp = 0.0
+                v_y_temp = 0.0
+            else:
+                a_temp = a[index]
+                b_temp = b[index]
+                v_x_temp = self.velocity_x[index]
+                v_y_temp = self.velocity_y[index]
+
+            self.observations[i] = np.hstack([a_temp, b_temp, delta_x, delta_y,c_temp,d_temp,v_x_temp,v_y_temp,
                                               self.robot[i].getField("rotation").getSFRotation()[3] % (2 * np.pi)
                                               if self.robot[i].getField("rotation").getSFRotation()[2]
                                                  > 0 else (-self.robot[i].getField("rotation").getSFRotation()[
                                                   3]) % (2 * np.pi)
                                               ])
-            # self.observations[i] = np.append([self.positions_x[i]],[self.positions_y[i],ds_value[i],self.dis_goal[i],
-            #                      self.rot_goal[i],self.robot[i].getField("rotation").getSFRotation()[3]%(2*np.pi)
-            #                      if self.robot[i].getField("rotation").getSFRotation()[2]
-            #                         >0 else (-self.robot[i].getField("rotation").getSFRotation()[3])%(2*np.pi)
-            #                       ])
         self.obs_history.append(self.observations)
         del self.obs_history[:-2]
+        self.dis_epu_history.append(self.dis_epu)
+        del self.dis_epu_history[:-2]
         return self.observations
 
     def get_reward(self, action=None):
-        """
 
-        :param action:
-        :type action:
-        :return:
-        """
-        # self.ds : 距离越大，ds越小
         rewards = np.empty((self.num_robots, 1), float)
         for i in range(self.num_robots):
-            # for k in range(self.num_robots):
-            #     if self.observations[i][k] < 0.1 and self.observations[i][k]!=0:
-            #         rewards[i] -= 0.1
-            # 自己定义的过于靠近的负向奖励
+
             rewards[i] = 100 * (np.linalg.norm([self.obs_history[-2][i][2], self.obs_history[-2][i][3]]) - \
                                 np.linalg.norm([self.obs_history[-1][i][2], self.obs_history[-1][i][3]]))
-            # rewards[i] = - np.linalg.norm([self.positions_x[i]-self.targetx[i],self.positions_y[i]-self.targety[i]])
             if self.dis_goal[i]<0.03:
-                rewards[i] += 0.3
+                rewards[i] += 0.05
             for k in range(self.num_robots):
                 if 0.08 < self.dis_epu[i][k] < 0.12:
                     rewards[i] -= 0.15
                 elif 0.0 < self.dis_epu[i][k] <= 0.08:
                     rewards[i] -= 0.35
             for j in range(self.num_cols):
-                if 0.18 < self.dis_col[i][j] <= 0.21 :
+                if 0.15 < self.dis_col[i][j] <= 0.19 :
                     rewards[i] -= 0.15
-                elif 0.0 < self.dis_epu[i][j] <= 0.18:
+                elif 0.0 < self.dis_col[i][j] <= 0.15:
                     rewards[i] -= 0.35
-            # rewards[i] -= self.observations[i][10]
-            # if(action[i][0]==0.0 and action[i][1]==0.0):
-            #     rewards[i] = 0
-            # else:
-            #     rewards[i] -=0.05
-
-            # dis_goal = cal_dis(self.observations[i][10],self.observations[i][11])
-            # if dis_goal < 0.5:
-            #     rewards[i] += 1.5- dis_goal
-
-            # ds_current = cal_dis(self.observations[i][0], self.observations[i][1])
-            # ds_pre = cal_dis(self.obs_history[self.steps - 2][i][0], self.obs_history[self.steps - 2][i][1])
-            # rewards[i] = ds_pre - ds_current
         return rewards
 
 
@@ -249,7 +210,60 @@ class EpuckSupervisor:
     def get_info(self):
         pass
 
-
+    def apf(self):
+        self.Kr = 0.5
+        self.Ka = 5.0
+        a_temp = np.empty((env.num_robots, 2), float)
+        do = 0.2
+        for i in range(self.num_robots):
+            self.xGradRepPotFieldTemp = 0.0
+            self.yGradRepPotFieldTemp = 0.0
+            for k in range(self.num_cols):
+                if self.dis_col[i][k] <=do:
+                    Gx1 = (self.Kr * ((1 / self.dis_col[i][k]) - (1 / do)) * (1 /self.dis_col[i][k] ** 3) * (self.dis_goal[i]) * (
+                                self.positions_x[i] - self.col_x[k]))
+                    Gx2 = (0.5 * self.Kr * (((1 / self.dis_col[i][k]) - (1 / do)) ** 2) * (1 /self.dis_goal[i]) * (
+                                self.positions_x[i] - self.targetx[i]))
+                    Gy1 = (self.Kr * ((1 / self.dis_col[i][k]) - (1 / do)) * (1 / self.dis_col[i][k] ** 3) * (self.dis_goal[i]) * (
+                                self.positions_y[i] - self.col_y[k]))
+                    Gy2 = (0.5 * self.Kr * (((1 /self.dis_col[i][k]) - (1 / do)) ** 2) * (1 /self.dis_goal[i]) * (
+                                self.positions_y[i] - self.targety[i]))
+                    self.xGradRepPotFieldTemp = (Gx1 - Gx2) + self.xGradRepPotFieldTemp
+                    self.yGradRepPotFieldTemp = (Gy1 - Gy2) + self.yGradRepPotFieldTemp
+            self.xGradAttPotField = - self.Ka * 2 * (self.dis_goal[i])*(self.positions_x[i]-self.targetx[i])
+            self.yGradAttPotField = - self.Ka * 2 * (self.dis_goal[i]) * (self.positions_y[i] - self.targety[i])
+            for j in range(self.num_robots):
+                if 0<self.dis_epu[i][j] <=do:
+                    Gx3 = (self.Kr * ((1 / self.dis_epu[i][j]) - (1 / do)) * (1 /self.dis_epu[i][j] ** 3) * (self.dis_goal[i]) * (
+                                self.positions_x[i] - self.positions_x[j]))
+                    Gx4 = (0.5 * self.Kr * (((1 / self.dis_epu[i][j]) - (1 / do)) ** 2) * (1 /self.dis_goal[i]) * (
+                                self.positions_x[i] - self.targetx[i]))
+                    Gy3 = (self.Kr * ((1 / self.dis_epu[i][j]) - (1 / do)) * (1 / self.dis_epu[i][j] ** 3) * (self.dis_goal[i]) * (
+                                self.positions_y[i] - self.positions_y[j]))
+                    Gy4 = (0.5 * self.Kr * (((1 /self.dis_epu[i][j]) - (1 / do)) ** 2) * (1 /self.dis_goal[i]) * (
+                                self.positions_y[i] - self.targety[j]))
+                    self.xGradRepPotFieldTemp = (Gx3 - Gx4) + self.xGradRepPotFieldTemp
+                    self.yGradRepPotFieldTemp = (Gy3 - Gy4) + self.yGradRepPotFieldTemp
+            xGradPotField = self.xGradRepPotFieldTemp + self.xGradAttPotField
+            yGradPotField = self.yGradRepPotFieldTemp + self.yGradAttPotField
+            field_angle_temp = math.atan2(xGradPotField,yGradPotField)
+            self.heading_angle = 1.57 - field_angle_temp
+            w_temp = (self.heading_angle - self.rot[i])
+            w_temp = w_temp + 0.5 * np.random.rand()
+            if w_temp > 3.14:
+                w_temp = w_temp - 6.28
+            if w_temp < -3.14:
+                w_temp = w_temp + 6.28
+            # w_temp = (a- self.heading_angle)
+            if w_temp <= 2.0 and w_temp >= -2.0:
+                self.w = 1.5 * w_temp
+            elif w_temp <= 3.14 and w_temp >= -3.14:
+                self.w = 0.9 * w_temp
+            else:
+                self.w = 0.45 * w_temp
+            a_temp[i][0] = (2 * 0.07536 - 0.0502 * self.w) / (2 * 0.0205)
+            a_temp[i][1] = (2 * 0.07536 + 0.0502 * self.w) / (2 * 0.0205)
+        return a_temp
 
     def reset(self):
         self.steps = 0
@@ -269,7 +283,6 @@ class EpuckSupervisor:
             receiver = self.communication[i]['receiver']
             while receiver.getQueueLength() > 0:
                 receiver.nextPacket()
-
         return self.get_observations()
 
 def create_path(path):
@@ -288,7 +301,7 @@ if __name__ =='__main__':
     env_name= 'nav'
     env=EpuckSupervisor()
     env_evaluate = env
-    number = 1
+    number = 111
     seed = 41
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
@@ -301,8 +314,8 @@ if __name__ =='__main__':
     agent = SAC(state_dim, action_dim, max_action)
     replay_buffer = ReplayBuffer(state_dim, action_dim)
 
-    max_train_steps = 3e6  # Maximum number of training steps  3e6
-    random_steps = 25e3  # Take the random actions in the beginning for the better exploration 25e3
+    max_train_steps = 1e6  # Maximum number of training steps  3e6
+    random_steps = 0#25e3  # Take the random actions in the beginning for the better exploration 25e3
     evaluate_freq = 10000  # Evaluate the policy every 'evaluate_freq' steps 5000
     evaluate_num = 0  # Record the number of evaluations
     evaluate_rewards = []  # Record the rewards during the evaluating
@@ -321,8 +334,13 @@ if __name__ =='__main__':
             for n in range(env.num_robots):
                 if total_steps < random_steps:  # Take the random actions in the beginning for the better exploration
                     a[n] = env.action_space.sample()
+                    # a = env.apf()
                 else:
-                    a[n]= agent.choose_action(s[n])
+                    # if env.selfless[n]:
+                    #     a[n] =env.apf()[n]
+                    # else:
+                    #     a[n]= agent.choose_action(s[n])
+                    a[n] = agent.choose_action(s[n])
             s_, r, done, _ = env.step(a)
             eposide_reward += r
             # When dead or win or reaching the max_episode_steps, done will be Ture, we need to distinguish them;
@@ -330,8 +348,8 @@ if __name__ =='__main__':
             # but when reaching the max_episode_steps,there is a next state s' actually.
             if done:
                 dw = True
-                eposide_rewards.append(eposide_reward)
-                np.save('D:/fp/nav/10/col/all_obs/controllers/models/921/SAC_near_r_{}_number_{}.npy'.format(env_name, number),
+                eposide_rewards.append(eposide_reward.sum())
+                np.save('F:/task/all_obs/nav_task/controllers/supervisor_manager/SAC_near_r_{}_number_{}.npy'.format(env_name, number),
                         np.array(eposide_rewards))
             else:
                 dw = False
@@ -353,7 +371,7 @@ if __name__ =='__main__':
                 # writer.add_scalar('step_rewards_{}'.format(env_name), evaluate_reward, global_step=total_steps)
                 # Save the rewards
                 if evaluate_num % 10 == 0:
-                    np.save('D:/fp/nav/10/col/all_obs/controllers/models/921/SAC_env_{}_number_{}.npy'.format(env_name, number), np.array(evaluate_rewards))
+                    np.save('F:/task/all_obs/nav_task/controllers/supervisor_manager/SAC_env_{}_number_{}.npy'.format(env_name, number), np.array(evaluate_rewards))
             total_steps += 1
 
 

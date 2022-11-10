@@ -18,8 +18,8 @@ class Actor(nn.Module):
         self.l2 = nn.Linear(hidden_width, hidden_width)
         self.mean_layer = nn.Linear(hidden_width, action_dim)
         self.log_std_layer = nn.Linear(hidden_width, action_dim)
-        chkpt_dir = 'D:/fp/nav/10/col/all_obs/controllers/models/921'
-        self.checkpoint_file = os.path.join(chkpt_dir ,name+"_sac10_1")
+        chkpt_dir = 'F:/task/all_obs/nav_task/controllers/supervisor_manager'
+        self.checkpoint_file = os.path.join(chkpt_dir ,name+"_sac10_111")
 
     def forward(self, x, deterministic=False, with_logprob=True):
         x = F.relu(self.l1(x))
@@ -66,8 +66,8 @@ class Critic(nn.Module):  # According to (s,a), directly calculate Q(s,a)
         self.l4 = nn.Linear(state_dim + action_dim, hidden_width)
         self.l5 = nn.Linear(hidden_width, hidden_width)
         self.l6 = nn.Linear(hidden_width, 1)
-        chkpt_dir = 'D:/fp/nav/10/col/all_obs/controllers/models/921'
-        self.checkpoint_file = os.path.join(chkpt_dir, name+"_sac10_1")
+        chkpt_dir = 'F:/task/all_obs/nav_task/controllers/supervisor_manager'
+        self.checkpoint_file = os.path.join(chkpt_dir, name+"_sac10_111")
 
     def forward(self, s, a):
         s_a = torch.cat([s, a], 1)
@@ -184,9 +184,12 @@ class SAC(object):
 
         # Compute actor loss
         a, log_pi = self.actor(batch_s)
+        print(log_pi.size())
         Q1, Q2 = self.critic(batch_s, a)
         Q = torch.min(Q1, Q2)
+        print(Q.size())
         actor_loss = (self.alpha * log_pi - Q).mean()
+        print(actor_loss)
 
         # Optimize the actor
         self.actor_optimizer.zero_grad()
@@ -235,8 +238,6 @@ def evaluate_policy(env, agent):
         while not done:
             for i in range(env.num_robots):
                 a[i]= agent.choose_action(s[i], deterministic=True)  # We use the deterministic policy during the evaluating
-                # if(s[i][10]<0.1):
-                #     a[i] = [0.0,0.0]
             s_, r, done, _ = env.step(a)
             for k in range(env.num_robots):
                 episode_reward += r[k]
