@@ -10,6 +10,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.distributions import Normal
 import os
 
+
 class Actor(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_width, max_action,name):
         super(Actor, self).__init__()
@@ -18,8 +19,8 @@ class Actor(nn.Module):
         self.l2 = nn.Linear(hidden_width, hidden_width)
         self.mean_layer = nn.Linear(hidden_width, action_dim)
         self.log_std_layer = nn.Linear(hidden_width, action_dim)
-        chkpt_dir = 'F:/task/all_obs/nav_task/controllers/supervisor_manager'
-        self.checkpoint_file = os.path.join(chkpt_dir ,name+"_sac10_111")
+        chkpt_dir = './models/saved/sac_mid'
+        self.checkpoint_file = os.path.join(chkpt_dir ,name+"_sac")
 
     def forward(self, x, deterministic=False, with_logprob=True):
         x = F.relu(self.l1(x))
@@ -28,8 +29,6 @@ class Actor(nn.Module):
         log_std = self.log_std_layer(x)  # We output the log_std to ensure that std=exp(log_std)>0
         log_std = torch.clamp(log_std, -20, 2)
         std = torch.exp(log_std)
-        # wandb.log({'std0': std[0][0]})
-        # wandb.log({'std1': std[0][1]})
 
         dist = Normal(mean, std)  # Generate a Gaussian distribution
         if deterministic:  # When evaluating，we use the deterministic policy
@@ -66,8 +65,8 @@ class Critic(nn.Module):  # According to (s,a), directly calculate Q(s,a)
         self.l4 = nn.Linear(state_dim + action_dim, hidden_width)
         self.l5 = nn.Linear(hidden_width, hidden_width)
         self.l6 = nn.Linear(hidden_width, 1)
-        chkpt_dir = 'F:/task/all_obs/nav_task/controllers/supervisor_manager'
-        self.checkpoint_file = os.path.join(chkpt_dir, name+"_sac10_111")
+        chkpt_dir = './models/saved/sac_mid'
+        self.checkpoint_file = os.path.join(chkpt_dir, name+"_sac")
 
     def forward(self, s, a):
         s_a = torch.cat([s, a], 1)
@@ -129,12 +128,13 @@ class SAC(object):
         self.TAU = 0.005  # Softly update the target network
         self.lr = 3e-4  # learning rate
         self.adaptive_alpha = True  # Whether to automatically learn the temperature alpha
-        self.load_model = False
+        self.load_model = True
+
         if self.adaptive_alpha:
             # Target Entropy = −dim(A) (e.g. , -6 for HalfCheetah-v2) as given in the paper
             self.target_entropy = -action_dim
             # We learn log_alpha instead of alpha to ensure that alpha=exp(log_alpha)>0
-            self.log_alpha = torch.zeros(1,requires_grad=True)
+            self.log_alpha = torch.zeros(1, requires_grad=True)
             self.alpha = self.log_alpha.exp()
             self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=self.lr)
         else:
@@ -153,21 +153,16 @@ class SAC(object):
     def choose_action(self, s, deterministic=False):
         s = torch.unsqueeze(torch.tensor(s, dtype=torch.float), 0)
         a, _= self.actor(s, deterministic, False)  # When choosing actions, we do not need to compute log_pi
-        return a.data.cpu().numpy().flatten()
+        return a.data.numpy().flatten()
 
     def learn(self, relay_buffer):
         batch_s, batch_a, batch_r, batch_s_, batch_dw = relay_buffer.sample(self.batch_size)  # Sample a batch
-        batch_s = batch_s
-        batch_a = batch_a
-        batch_r = batch_r
-        batch_dw = batch_dw
-        batch_s_ = batch_s_
+
         with torch.no_grad():
             batch_a_, log_pi_ = self.actor(batch_s_)  # a' from the current policy
             # Compute target Q
             target_Q1, target_Q2 = self.critic_target(batch_s_, batch_a_)
-            # print(self.alpha.is_cuda,batch_r.is_cuda,batch_dw.is_cuda,target_Q1.is_cuda,target_Q2.is_cuda,log_pi_.is_cuda)
-            target_Q = batch_r + 0.99 * (1 - batch_dw) * (torch.min(target_Q1, target_Q2) - self.alpha* log_pi_)
+            target_Q = batch_r + self.GAMMA * (1 - batch_dw) * (torch.min(target_Q1, target_Q2) - self.alpha * log_pi_)
 
         # Compute current Q
         current_Q1, current_Q2 = self.critic(batch_s, batch_a)
@@ -184,12 +179,9 @@ class SAC(object):
 
         # Compute actor loss
         a, log_pi = self.actor(batch_s)
-        print(log_pi.size())
         Q1, Q2 = self.critic(batch_s, a)
         Q = torch.min(Q1, Q2)
-        print(Q.size())
         actor_loss = (self.alpha * log_pi - Q).mean()
-        print(actor_loss)
 
         # Optimize the actor
         self.actor_optimizer.zero_grad()
@@ -228,7 +220,7 @@ class SAC(object):
         self.critic_target.load_checkpoint()
 
 def evaluate_policy(env, agent):
-    times = 1  # Perform three evaluations and calculate the average
+    times = 3  # Perform three evaluations and calculate the average
     evaluate_reward = 0
     for _ in range(times):
         s = env.reset()
@@ -238,15 +230,13 @@ def evaluate_policy(env, agent):
         while not done:
             for i in range(env.num_robots):
                 a[i]= agent.choose_action(s[i], deterministic=True)  # We use the deterministic policy during the evaluating
-            s_, r, done, _ = env.step(a)
-            for k in range(env.num_robots):
-                episode_reward += r[k]
-            s = s_
-        #calculate std
+                s_, r, done, _ = env.step(a)
+                episode_reward += r[i]
+                s = s_
         evaluate_reward += episode_reward
     env.evaluate_reward_history.append(evaluate_reward / times)
-    if evaluate_reward/times == max(env.evaluate_reward_history):
-        agent.save_models()
+    #if evaluate_reward/times == max(env.evaluate_reward_history):
+        #agent.save_models()
     return int(evaluate_reward / times)
 
 

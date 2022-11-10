@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from models.noise_generator import OUActionNoise
-from models.replay_buffer import SACReplayBuffer
+from models.replay_buffer import ReplayBuffer
 
 
 class CriticNetwork(nn.Module):

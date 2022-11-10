@@ -58,10 +58,8 @@ class EpuckRobot():
 
     def use_message_data(self, message):
         self.setup_motors()
-        # action1 = float(message[0]) * 7.536
-        # action2 = float(message[1]) * 7.536
-        action1 = float(message[0])
-        action2 = float(message[1])
+        action1 = float(message[0]) * 7.536
+        action2 = float(message[1]) * 7.536
         self.left_motor.setVelocity(action1)
         self.right_motor.setVelocity(action2)
 
