@@ -7,11 +7,8 @@ from utilities import normalizeToRange
 from controller import Supervisor
 import numpy as np
 import os
-from models.networks import DDPG
-from sac_rl import *
 from gym import spaces
 
-import wandb
 
 #定义robot：self.supervisor.getFrameDef('$robot_name')
 #定义robot的emitter和receiver：self.supervisor.getDevice('$emitter_name')
@@ -202,9 +199,6 @@ def create_path(path):
 
 
 if __name__ =='__main__':
-    create_path("./models/saved/sac_all_map/")
-    create_path("./exports_sac_all_map/")
-    env_name= 'juji'
     env=EpuckSupervisor()
     env_evaluate = env
     number = 1
@@ -218,52 +212,8 @@ if __name__ =='__main__':
     print("max_action={}".format(max_action))
     print("max_episode_steps={}".format(max_episode_steps))
 
-    agent = SAC(state_dim, action_dim, max_action)
-
-    replay_buffer = ReplayBuffer(state_dim, action_dim)
-
-    max_train_steps = 3e6  # Maximum number of training steps  3e6
-    random_steps = 0#25e3  # Take the random actions in the beginning for the better exploration 25e3
-    evaluate_freq = 1#5000  # Evaluate the policy every 'evaluate_freq' steps 5000
-    evaluate_num = 0  # Record the number of evaluations
-    evaluate_rewards = []  # Record the rewards during the evaluating
-    total_steps = 0  # Record the total steps during the training
-
-
-    while total_steps < max_train_steps:
-        s = env.reset()
-        episode_steps = 0
-        done = False
-        a = np.empty((env.num_robots, 2), float)
-        while not done:
-            episode_steps += 1
-            for n in range(env.num_robots):
-                if total_steps < random_steps:  # Take the random actions in the beginning for the better exploration
-                    a[n] = env.action_space.sample()
-                else:
-                    a[n]= agent.choose_action(s[n])
-            s_, r, done, _ = env.step(a)
-            if done and episode_steps != max_episode_steps:
-                dw = True
-            else:
-                dw = False
-            for j in range(env.num_robots):
-                replay_buffer.store(s[j], a[j], r[j], s_[j], dw)  # Store the transition
-            s = s_
-
-            if total_steps >= random_steps:
-                agent.learn(replay_buffer)
-
-            if (total_steps + 1) % evaluate_freq == 0:
-                print(total_steps)
-                print('eva')
-                evaluate_num += 1
-                evaluate_reward = evaluate_policy(env_evaluate, agent)
-                evaluate_rewards.append(evaluate_reward)
-                print("evaluate_num:{} \t evaluate_reward:{}".format(evaluate_num, evaluate_reward))
-                if evaluate_num % 10 == 0:
-                    np.save('./data_train/SAC_env_{}_number_{}.npy'.format(env_name, number), np.array(evaluate_rewards))
-            total_steps += 1
+    任务目标：在有动态障碍物的地图中实现5个智能体的避障与已知目标点得聚集任务
+    补充利用参数共享或多智能体强化学习算法实现代码
 
 
 
